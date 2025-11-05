@@ -17,6 +17,13 @@ static void set_update_handler(nw_path_monitor_t monitor, uintptr_t cb_hnd) {
 		nw_release(path);
 	});
 }
+
+extern void invoke_cancel(uintptr_t hnd);
+static void set_cancel_handler(nw_path_monitor_t monitor, uintptr_t cb_hnd) {
+	nw_path_monitor_set_cancel_handler(monitor, ^{
+		invoke_cancel(cb_hnd);
+	});
+}
 */
 import "C"
 import (
@@ -72,6 +79,7 @@ func startMonitor(ctx context.Context) *monitor {
 		}
 	})
 	C.set_update_handler(mon, C.uintptr_t(cbHnd))
+	C.set_cancel_handler(mon, C.uintptr_t(cbHnd))
 
 	// The callback should get fired immediately with the current state, as per the docs
 	// in path_monitor.h for nw_path_monitor_set_update_handler
@@ -87,13 +95,6 @@ func startMonitor(ctx context.Context) *monitor {
 		if m.last == nil {
 			close(m.rcvd)
 		}
-
-		// This was commented out previously, perhaps in error.
-		// If memory issues start to arise, this would be a good place to start looking.
-		//
-		// One might expect that `nw_path_monitor_cancel` will ensure that the update handler will not
-		// be invoked (and so is safe to release), but there's zero documentation. Thanks Apple.
-		cbHnd.Delete()
 	}()
 
 	return m
@@ -149,4 +150,9 @@ func makeStatus(path C.nw_path_t) Status {
 //export invoke_callback
 func invoke_callback(hnd C.uintptr_t, path C.nw_path_t) {
 	cgo.Handle(hnd).Value().(func(C.nw_path_t))(path)
+}
+
+//export invoke_cancel
+func invoke_cancel(hnd C.uintptr_t) {
+	cgo.Handle(hnd).Delete()
 }
