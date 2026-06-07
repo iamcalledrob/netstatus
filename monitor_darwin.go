@@ -24,6 +24,16 @@ static void set_cancel_handler(nw_path_monitor_t monitor, uintptr_t cb_hnd) {
 		invoke_cancel(cb_hnd);
 	});
 }
+
+// set_serial_queue creates a private serial dispatch queue, assigns it to the
+// monitor, then releases the caller's reference (the monitor retains its own).
+// A serial queue ensures the cancel handler only fires after all in-flight
+// update callbacks have fully completed.
+static void set_serial_queue(nw_path_monitor_t monitor) {
+	dispatch_queue_t q = dispatch_queue_create("com.honey.netstatus", DISPATCH_QUEUE_SERIAL);
+	nw_path_monitor_set_queue(monitor, q);
+	dispatch_release(q);
+}
 */
 import "C"
 import (
@@ -35,7 +45,8 @@ import (
 )
 
 type monitor struct {
-	rcvd chan struct{}
+	rcvd       chan struct{}
+	rcvdClosed bool // guards against double-close; accessed under mu
 
 	mu       sync.Mutex
 	last     *Status
@@ -54,20 +65,25 @@ func startMonitor(ctx context.Context) *monitor {
 	}
 	C.nw_retain(unsafe.Pointer(mon))
 
-	// The initial callback won't be fired if the queue isn't set.
-	// Using the main queue results in deadlock--don't do it!
-	C.nw_path_monitor_set_queue(mon, C.dispatch_get_global_queue(C.QOS_CLASS_DEFAULT, 0))
+	// Use a private serial queue so the cancel handler is serialised after any
+	// in-flight update callbacks (see set_serial_queue above).
+	// NOTE: the main queue causes deadlock, hence the helper.
+	C.set_serial_queue(mon)
 
-	// Use a cgo.Handle to allow C to call back into Go.
-	cbHnd := cgo.NewHandle(func(path C.nw_path_t) {
+	// updateHnd is used exclusively for path-update callbacks.
+	// Per the Network framework docs: "Once the cancel handler has been called,
+	// the update handler will not fire again." Combined with the serial queue,
+	// this means updateHnd is safe to delete once cancelDone is received.
+	updateHnd := cgo.NewHandle(func(path C.nw_path_t) {
 		status := makeStatus(path)
 		m.mu.Lock()
 		defer m.mu.Unlock()
 
 		var changed bool
-		if m.last == nil {
+		if m.last == nil && !m.rcvdClosed {
+			m.rcvdClosed = true
 			close(m.rcvd)
-		} else if *m.last != status {
+		} else if m.last != nil && *m.last != status {
 			changed = true
 		}
 
@@ -78,8 +94,14 @@ func startMonitor(ctx context.Context) *monitor {
 			m.onChange(status)
 		}
 	})
-	C.set_update_handler(mon, C.uintptr_t(cbHnd))
-	C.set_cancel_handler(mon, C.uintptr_t(cbHnd))
+
+	// cancelHnd is a separate handle used only for the cancel callback.
+	// invoke_cancel calls the func() to signal cancelDone, then deletes this handle.
+	cancelDone := make(chan struct{})
+	cancelHnd := cgo.NewHandle(func() { close(cancelDone) })
+
+	C.set_update_handler(mon, C.uintptr_t(updateHnd))
+	C.set_cancel_handler(mon, C.uintptr_t(cancelHnd))
 
 	// The callback should get fired immediately with the current state, as per the docs
 	// in path_monitor.h for nw_path_monitor_set_update_handler
@@ -90,9 +112,16 @@ func startMonitor(ctx context.Context) *monitor {
 		C.nw_path_monitor_cancel(mon)
 		C.nw_release(unsafe.Pointer(mon))
 
+		// Wait for the NW cancel handler to fire. The serial queue guarantees all
+		// in-flight update callbacks have completed before the cancel handler runs,
+		// so updateHnd will never be invoked again after this receive.
+		<-cancelDone
+		updateHnd.Delete()
+
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		if m.last == nil {
+		if m.last == nil && !m.rcvdClosed {
+			m.rcvdClosed = true
 			close(m.rcvd)
 		}
 	}()
@@ -144,15 +173,18 @@ func makeStatus(path C.nw_path_t) Status {
 	}
 }
 
-// Invokes the callback identified by hnd. Used to provide a C-exported function that can call
-// back to a specific go function.
+// invoke_callback calls the update closure registered for the given handle.
 //
 //export invoke_callback
 func invoke_callback(hnd C.uintptr_t, path C.nw_path_t) {
 	cgo.Handle(hnd).Value().(func(C.nw_path_t))(path)
 }
 
+// invoke_cancel signals cancelDone via the cancel closure, then deletes the handle.
+//
 //export invoke_cancel
 func invoke_cancel(hnd C.uintptr_t) {
-	cgo.Handle(hnd).Delete()
+	h := cgo.Handle(hnd)
+	h.Value().(func())()
+	h.Delete()
 }
