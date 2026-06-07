@@ -87,7 +87,7 @@ FAIL_RELEASE_NONE:
     }
 
     void stop() {
-        PostThreadMessageA(_thread_id, WM_EXIT_PUMP, NULL, NULL);
+        PostThreadMessageA(_thread_id, WM_EXIT_PUMP, 0, 0);
     }
 
 #pragma MARK INetworkListManagerEvents
@@ -126,7 +126,7 @@ private:
 	onConnectionStatusChange_t _callback;
 };
 
-DWORD threadId = NULL;
+DWORD threadId = 0;
 
 CSMHandle ConnectionStatusMonitorCreate(onConnectionStatusChange_t callback) {
     return new ConnectionStatusMonitor(callback);

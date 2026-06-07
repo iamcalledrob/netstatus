@@ -3,8 +3,8 @@
 package netstatus
 
 /*
-#cgo LDFLAGS: -lstdc++ -lole32
-#import "monitor_windows.hpp"
+#cgo LDFLAGS: -lstdc++ -lole32 -luuid
+#include "monitor_windows.hpp"
 
 // for Windows, cgo exports with __declspec(dllexport), and this is needed for this forward declaration to be valid.
 extern __declspec(dllexport) void universal_callback(CSMHandle hnd, _Bool isConnected);
@@ -22,7 +22,8 @@ import (
 )
 
 type monitor struct {
-	rcvd chan struct{}
+	rcvd       chan struct{}
+	rcvdClosed bool // guards against double-close; accessed under mu
 
 	mu       sync.Mutex
 	last     *Status
@@ -72,7 +73,8 @@ func startMonitor(ctx context.Context) *monitor {
 
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		if m.last == nil {
+		if m.last == nil && !m.rcvdClosed {
+			m.rcvdClosed = true
 			close(m.rcvd)
 		}
 	}()
@@ -88,9 +90,10 @@ func (m *monitor) rawCallback(isConnected bool) {
 
 	// Initial received state shouldn't count as a change.
 	var changed bool
-	if m.last == nil {
+	if m.last == nil && !m.rcvdClosed {
+		m.rcvdClosed = true
 		close(m.rcvd)
-	} else if *m.last != status {
+	} else if m.last != nil && *m.last != status {
 		changed = true
 	}
 

@@ -19,9 +19,9 @@ type InterfaceKind string
 
 const (
 	InterfaceTypeUnknown  InterfaceKind = "unknown"
-	InterfaceTypeWired                  = "wired"
-	InterfaceTypeWifi                   = "wifi"
-	InterfaceTypeCellular               = "cellular"
+	InterfaceTypeWired    InterfaceKind = "wired"
+	InterfaceTypeWifi     InterfaceKind = "wifi"
+	InterfaceTypeCellular InterfaceKind = "cellular"
 )
 
 type Monitor struct {
