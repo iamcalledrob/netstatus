@@ -13,6 +13,10 @@ static CSMHandle ConnectionStatusMonitorCreateWithUniversalCallback() {
 	return ConnectionStatusMonitorCreate(&universal_callback);
 }
 
+static _Bool HRESULTFailed(HRESULT result) {
+	return FAILED(result);
+}
+
 */
 import "C"
 import (
@@ -22,11 +26,13 @@ import (
 )
 
 type monitor struct {
-	rcvd chan struct{}
+	rcvd     chan struct{}
+	rcvdOnce sync.Once
 
-	mu       sync.Mutex
-	last     *Status
-	onChange func(Status)
+	callbackMu sync.Mutex
+	mu         sync.Mutex
+	last       *Status
+	onChange   func(Status)
 }
 
 func startMonitor(ctx context.Context) *monitor {
@@ -53,7 +59,10 @@ func startMonitor(ctx context.Context) *monitor {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 
-		C.ConnectionStatusMonitorStart(handle)
+		result := C.ConnectionStatusMonitorStart(handle)
+		if bool(C.HRESULTFailed(result)) {
+			m.signalReceived()
+		}
 
 		// monitor can now be freed
 		close(stopped)
@@ -73,7 +82,7 @@ func startMonitor(ctx context.Context) *monitor {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if m.last == nil {
-			close(m.rcvd)
+			m.signalReceived()
 		}
 	}()
 
@@ -83,23 +92,33 @@ func startMonitor(ctx context.Context) *monitor {
 func (m *monitor) rawCallback(isConnected bool) {
 	status := makeStatus(isConnected)
 
+	// Serialize native updates while allowing Current and OnChange to be called
+	// safely from the user callback.
+	m.callbackMu.Lock()
+	defer m.callbackMu.Unlock()
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// Initial received state shouldn't count as a change.
 	var changed bool
 	if m.last == nil {
-		close(m.rcvd)
+		m.signalReceived()
 	} else if *m.last != status {
 		changed = true
 	}
 
 	m.last = &status
+	cb := m.onChange
+	m.mu.Unlock()
 
 	// Only fire onChange if the status actually changed
 	if changed {
-		m.onChange(status)
+		cb(status)
 	}
+}
+
+func (m *monitor) signalReceived() {
+	m.rcvdOnce.Do(func() { close(m.rcvd) })
 }
 
 func (m *monitor) OnChange(cb func(status Status)) {

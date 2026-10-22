@@ -2,15 +2,14 @@
 #include <netlistmgr.h>
 #include <ocidl.h>
 
-#define WM_EXIT_PUMP (WM_USER + 0x0001)
-
-struct ConnectionStatusMonitor;
-
 #ifdef __cplusplus
+class ConnectionStatusMonitor;
+typedef ConnectionStatusMonitor * CSMHandle;
 extern "C" {
+#else
+typedef struct ConnectionStatusMonitor * CSMHandle;
 #endif
 
-typedef struct ConnectionStatusMonitor * CSMHandle;
 typedef void (*onConnectionStatusChange_t)(CSMHandle monitor, bool isConnected);
 
 CSMHandle   ConnectionStatusMonitorCreate(onConnectionStatusChange_t);
